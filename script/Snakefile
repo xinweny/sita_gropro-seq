@@ -1,0 +1,251 @@
+#### Packages ####
+import glob, os
+import pandas as pd
+
+#### Functions ####
+def get_layout(metadata_path):
+    metadata = pd.read_csv(metadata_path, header=0, sep=',')
+
+    return metadata['LibraryLayout'][0]
+
+def get_organism(metadata_path):
+    metadata = pd.read_csv(metadata_path, header=0, sep=',')
+    organism_name = metadata['Organism'][0]
+
+    return organism_name.replace(' ', '_').lower()
+
+def get_samples(path, ext):
+    samples = set([os.path.basename(sample).replace(f".{ext}", '') for sample in glob.glob(f"{path}*.{ext}")
+              if not any(match in os.path.basename(sample) for match in ['trimmed', 'val'])])
+
+    if LAYOUT == 'PAIRED':
+        samples = set([sample[:-2] for sample in samples])
+
+    return samples
+
+def get_raw_reads(wcs):
+    if LAYOUT == 'PAIRED':  # Paired-end
+        return expand(f"{PREFIX}/fastq/{wcs.sample}_{{i}}.fastq.gz", i=[1, 2])
+
+    if LAYOUT == 'SINGLE':  # Single-end
+        return f"{PREFIX}/fastq/{wcs.sample}.fastq.gz"
+
+def get_trimmed_reads(wcs):
+    if LAYOUT == 'PAIRED':  # Paired-end
+        return expand(f"{PREFIX}/fastq/{wcs.sample}_{{i}}_val_{{i}}.fq.gz", i=[1, 2])
+
+    if LAYOUT == 'SINGLE':  # Single-end
+        return f"{PREFIX}/fastq/{wcs.sample}_trimmed.fq.gz"
+
+def custom_param(param, default):
+    try:
+        return config[param]
+
+    except KeyError:
+        return default
+
+#### Config ####
+configfile: "config/config.yaml"
+workdir: config['base']
+localrules: all
+
+PREFIX = f"data/{config['GSE']}"
+
+if os.path.exists(f"{PREFIX}/SraRunTable_{config['GSE']}.txt"):
+    LAYOUT = get_layout(f"{PREFIX}/SraRunTable_{config['GSE']}.txt")
+    ORGANISM = get_organism(f"{PREFIX}/SraRunTable_{config['GSE']}.txt")
+else:
+    LAYOUT = config['layout']
+    ORGANISM = config['organism']
+
+SAMPLES = get_samples(f"{PREFIX}/fastq/", 'fastq.gz')
+
+#### Workflow ####
+rule all:
+    input:
+        expand(f"{PREFIX}/map/{{sample}}_Bowtie2.rRNA.bam", sample=SAMPLES),
+        expand(f"{PREFIX}/map/{{sample}}_Aligned.sortedByCoord.out.bam", sample=SAMPLES),
+        expand(f"{PREFIX}/map/{{sample}}_Aligned.sortedByCoord.out.bam.bai", sample=SAMPLES),
+        expand(f"{PREFIX}/bigwig/{{sample}}.coverage.bw", sample=SAMPLES),
+        expand(f"{PREFIX}/bigwig/{{sample}}.coverage.offset.bw", sample=SAMPLES)
+
+# Step 1: Remove sequencing adapters from reads
+rule trimgalore_single:
+    input:
+        get_raw_reads
+    output:
+        f"{PREFIX}/fastq/{{sample}}_trimmed.fq.gz"
+    params:
+        job_name = f"{config['GSE']}_{{sample}}_TRIMSINGLE"
+    resources:
+        time_min = int(custom_param('trim_time', 60)),
+        nodes = 1,
+        tasks = 1,
+        cpus = 1
+    log: f"{PREFIX}/fastq/logs/Trim_galore.{{sample}}.log"
+    benchmark: f"{PREFIX}/fastq/.benchmark/Trim_galore.{{sample}}.benchmark"
+    shell:
+        f"""
+        trim_galore -j {{resources.cpus}} \
+        --stringency 2 -q 30 --FASTQc \
+        -o {PREFIX}/fastq {{input}} --gzip &> {{log}}
+        """
+
+rule trimgalore_paired:
+    input:
+        get_raw_reads
+    output:
+        f"{PREFIX}/fastq/{{sample}}_1_val_1.fq.gz",
+        f"{PREFIX}/fastq/{{sample}}_2_val_2.fq.gz"
+    params:
+        job_name = f"{config['GSE']}_{{sample}}_TRIMPAIRED"
+    resources:
+        time_min = int(custom_param('trim_time', 60)),
+        nodes = 1,
+        tasks = 1,
+        cpus = 2
+    log: f"{PREFIX}/fastq/logs/Trim_galore.{{sample}}.log"
+    benchmark: f"{PREFIX}/fastq/.benchmark/Trim_galore.{{sample}}.benchmark"
+    shell:
+        f"""
+        trim_galore -j {{resources.cpus}} \
+        --stringency 2 -q 30 --paired --FASTQc \
+        -o {PREFIX}/fastq {{input}} --gzip &> {{log}}
+        """
+
+# Step 2: filter out ribosomal reads
+rule align_ribosomal:
+    input:
+        rules.trimgalore_paired.output if LAYOUT == 'PAIRED' else rules.trimgalore_single.output
+    output:
+        f"{PREFIX}/map/{{sample}}_Bowtie2.rRNA.bam"
+    params:
+        job_name = f"{config['GSE']}_{{sample}}_ALIGNRIBO",
+        input_command = f"-1 {input[0]} -2 {input[1]}" if LAYOUT == 'PAIRED' else f"-U {input}",
+        ribosomal = config['ribosomal'][ORGANISM]
+    resources:
+        time_min = 60,
+        nodes = 1,
+        tasks = 1,
+        cpus = 16
+    conda: "env/gropro-seq.yml"
+    log: f"{PREFIX}/map/log/{{sample}}_Bowtie2.rRNA.log"
+    shell:
+        """
+        bowtie2 --very-fast-local -x {params.ribosomal} -p {resources.cpus} \
+        {params.input_command} 2> {log} | \
+        samtools view -Shu - | samtools sort -o {output} -
+        """
+
+rule extract_unmapped_single:
+    input:
+        rules.align_ribosomal.output
+    output:
+        f"{PREFIX}/map/{{sample}}_FASTQ_filtered_rRNA.fq.gz"
+    params:
+        job_name = f"{config['GSE']}_{{sample}}_GETUNMAPPEDSINGLE"
+    resources:
+        time_min = 60,
+        nodes = 1,
+        tasks = 1,
+        cpus = 1
+    shell:
+        """
+        samtools fastq {output} -0 /dev/null -s /dev/null -f 4 {input}
+        """
+
+rule extract_unmapped_paired:
+    input:
+        rules.align_ribosomal.output
+    output:
+        f"{PREFIX}/map/{{sample}}_FASTQ_filtered_rRNA_1.fq.gz",
+        f"{PREFIX}/map/{{sample}}_FASTQ_filtered_rRNA_2.fq.gz"
+    params:
+        job_name = f"{config['GSE']}_{{sample}}_GETUNMAPPEDPAIRED"
+    resources:
+        time_min = 60,
+        nodes = 1,
+        tasks = 1,
+        cpus = 2
+    shell:
+        """
+        samtools fastq -1 {output[0]} -2 {output[1]} -0 /dev/null -s /dev/null -f 4 {input}
+        """
+
+# Step 3: map unmapped/non-ribosomal reads to genome
+rule star_align:
+    input:
+        rules.extract_unmapped_single.output if LAYOUT == 'SINGLE' else rules.extract_unmapped_paired.output
+    output:
+        f"{PREFIX}/map/{{sample}}_Aligned.sortedByCoord.out.bam",
+	      f"{PREFIX}/map/{{sample}}_Aligned.sortedByCoord.out.bam.bai"
+    params:
+        job_name = f"{config['GSE']}_{{sample}}_STAR",
+        genome_dir = config['star'][ORGANISM],
+	      genes_gtf = config['genes_gtf'][ORGANISM],
+        prefix = f"{PREFIX}/map/{{sample}}_"
+    resources:
+        time_min = 60,
+        nodes = 1,
+        tasks = 1,
+        cpus = 16
+    log: f"{PREFIX}/map/log/STAR_mapping.{{sample}}.log"
+    shell:
+        f"""
+        STAR --runThreadN {{resources.cpus}} \
+        --runMode alignReads --outFilterMultimapNmax 100 --winAnchorMultimapNmax 100 --alignEndsType EndToEnd \
+        --alignIntronMax 1 \
+        --readFilesIn {input} --readFilesCommand zcat \
+        --outFileNamePrefix {{params.prefix}} \
+        --outSAMtype BAM SortedByCoordinate \
+        --outFilterMismatchNmax 3 --outFilterMismatchNoverLmax 0.12 \
+        --alignSoftClipAtReferenceEnds no \
+        --outSAMunmapped Within \
+        --sjdbGTFfile {{params.genes_gtf}} --genomeDir {{params.genome_dir}} > {{log}}
+	      samtools index {{params.prefix}}Aligned.sortedByCoord.out.bam
+        """
+
+# Step 4: bigwig generation
+rule bamcoverage_coverage:
+    input:
+        f"{PREFIX}/map/{{sample}}_Aligned.sortedByCoord.out.bam"
+    output:
+        f"{PREFIX}/bigwig/{{sample}}.coverage.bw"
+    params:
+        job_name = f"{config['GSE']}_{{sample}}_BAMCOV",
+        blacklist = config['blacklist'][ORGANISM]
+    resources:
+        time_min = 60,
+        nodes = 1,
+        tasks = 1,
+        cpus = 20
+    conda: "env/gropro-seq.yml"
+    log: f"{PREFIX}/bigwig/log/bamCoverage.{{sample}}.coverage.log"
+    shell:
+        """
+        bamCoverage -b {input} -p {resources.cpus} -o {output} \
+        --binSize 1 \
+        --blackListFileName {params.blacklist} --skipNAs &> {log}
+        """
+
+rule bamcoverage_coverage_offset:
+    input:
+        f"{PREFIX}/map/{{sample}}_Aligned.sortedByCoord.out.bam"
+    output:
+        f"{PREFIX}/bigwig/{{sample}}.coverage.offset.bw"
+    params:
+        job_name = f"{config['GSE']}_{{sample}}_BAMCOVOFF",
+        blacklist = config['blacklist'][ORGANISM]
+    resources:
+        time_min = 60,
+        nodes = 1,
+        tasks = 1,
+        cpus = 20
+    conda: "env/gropro-seq.yml"
+    log: f"{PREFIX}/bigwig/log/bamCoverage.{{sample}}.coverage.offset.log"
+    shell:
+        """
+        bamCoverage -b {input} -p {resources.cpus} -o {output} \
+        --binSize 1 --Offset 1 --samFlagInclude 64 \
+        --blackListFileName {params.blacklist} --skipNAs &> {log}
+        """
