@@ -1,17 +1,16 @@
 base: "/rds/project/rs2099/rds-rs2099-toxgenomics/sita_gropro-seq"
-ribosomal:
-  homo_sapiens: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/human/rRNA_quantification"
-  mus_musculus: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/mouse/rRNA_quantification"
-  drosophila_melanogaster: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/drosophila/rRNA_quantification"
-star:
-  homo_sapiens: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/human/STAR"
-  mus_musculus: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/mouse/STAR"
-  drosophila_melanogaster: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/drosophila/STAR"
-genes_gtf:
-  homo_sapiens: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/human/Homo_sapiens.GRCh38.102.gtf"
-  mus_musculus: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/mouse/Mus_musculus.GRCm38.102.gtf"
-  drosophila_melanogaster: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/drosophila/Drosophila_melanogaster.BDGP6.28.102.gtf"
-blacklist:
-  homo_sapiens: "/data/sawarkar/hummel/2017_11_09_PolII_ReSeq_P180/hg38.blacklist1.bed"
-  mus_musculus: ""
-  drosophila_melanogaster: ""
+homo_sapiens:
+  bt_ribosomal: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/human/rrna/human"
+  star: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/human/STAR"
+  genes_gtf: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/human/Homo_sapiens.GRCh38.102.gtf"
+  blacklist_bed: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/human/hg38.blacklist1.bed"
+mus_musculus:
+  bt_ribosomal: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/mouse/rrna"
+  star: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/mouse/STAR"
+  genes_gtf: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/mouse/Mus_musculus.GRCm38.102.gtf"
+  blacklist_bed: ""
+drosophila_melanogaster:
+  bt_ribosomal: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/drosophila/rrna"
+  star: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/drosophila/STAR"
+  genes_gtf: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/drosophila/Drosophila_melanogaster.BDGP6.28.102.gtf"
+  blacklist: ""
