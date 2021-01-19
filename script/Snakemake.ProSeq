@@ -1,0 +1,130 @@
+import glob
+
+samples = [ os.path.basename(f) for f in glob.glob('FASTQ/*_R1.fastq.gz') ]
+samples = [ os.path.basename(x).replace('_R1.fastq.gz','') for x in samples ]
+#print(samples)
+
+glob_wildcards('FASTQ/{sample}_R1.fastq.gz')
+
+
+rule all:
+    input:
+        expand("FASTQ/{sample}_R1_val_1.fq.gz", sample = samples),
+        expand("FASTQ/{sample}_R2_val_2.fq.gz", sample = samples),
+        expand("Mapping/{sample}_Bowtie2.rRNA.bam", sample = samples),
+        expand("Mapping/{sample}_FASTQ_filtered_rRNA_R1.fq.gz", sample = samples),
+        expand("Mapping/{sample}_FASTQ_filtered_rRNA_R2.fq.gz", sample = samples),
+        expand("Mapping/{sample}_Aligned.sortedByCoord.out.bam", sample = samples),
+        expand("Mapping/{sample}_Aligned.sortedByCoord.out.bam.bai", sample = samples),
+        expand("bamCoverage/{sample}.coverage.bw", sample = samples),
+        expand("bamCoverage/{sample}.coverage.offset.bw", sample = samples)
+
+
+
+#Step 1: Remove sequencing adapters from reads
+rule trim_galore:
+    input:
+      	read1 = "FASTQ/{sample}_R1.fastq.gz",
+	      read2 = "FASTQ/{sample}_R2.fastq.gz"
+    output:
+        trimmed_read1="FASTQ/{sample}_R1_val_1.fq.gz",
+        trimmed_read2="FASTQ/{sample}_R2_val_2.fq.gz",
+    params:
+        outputdir="FASTQ",
+        stringency=2
+    log:
+        "FASTQ/logs/Trim_galore.{sample}.log"
+    benchmark:
+        "FASTQ/.benchmark/Trim_galore.{sample}.benchmark"
+    threads: 1
+    shell: """
+        module load trim_galore/0.4.4 cutadapt/1.9.1
+        trim_galore --stringency {params.stringency} -q 30 --paired --FASTQc -o {params.outputdir} {input[0]} {input[1]} --gzip &> {log}
+        """
+
+#Step 2: filter out ribosomal reads
+rule align_ribosomal:
+    input:
+        trimmed_read1="FASTQ/{sample}_R1_val_1.fq.gz",
+        trimmed_read2="FASTQ/{sample}_R2_val_2.fq.gz",
+    output:
+        "Mapping/{sample}_Bowtie2.rRNA.bam"
+    params:
+        ribosomal = "/data/sawarkar/hummel/rRNA_quantification/human"
+    threads: 15
+    log: "Mapping/log/{sample}_Bowtie2.rRNA.log"
+    shell: """
+        module load bowtie2/2.3.3.1 samtools
+        bowtie2 --very-fast-local -x {params.ribosomal} -p {threads} -1 {input.trimmed_read1} -2 {input.trimmed_read2} 2> {log} | samtools view -Shu - | samtools sort -o {output} -
+        """
+
+
+rule extract_unmapped:
+    input:
+        rules.align_ribosomal.output
+    output:
+        "Mapping/{sample}_FASTQ_filtered_rRNA_R1.fq.gz",
+        "Mapping/{sample}_FASTQ_filtered_rRNA_R2.fq.gz"
+    threads: 15
+    shell: """
+        module load samtools/1.10
+        samtools fastq -1 {output[0]} -2 {output[1]} -0 /dev/null -s /dev/null -f 4 {input}
+        """
+
+#Step 3: map unmapped/non-ribosomal reads to genome
+rule align2genome:
+    input:
+        rules.extract_unmapped.output
+    output:
+        "Mapping/{sample}_Aligned.sortedByCoord.out.bam",
+	"Mapping/{sample}_Aligned.sortedByCoord.out.bam.bai"
+    params:
+        genomeDir = "/data/repository/organisms/GRCh38_ensembl/STARIndex/",
+	genes = "/data/repository/organisms/GRCh38_ensembl/gencode/release_27/genes.gtf",
+        maxIntronLength = 1,
+        outprefix = "Mapping/{sample}_",
+        filterMaxMismatch = "--outFilterMismatchNmax 3",
+        filterMaxMismatchrate = "--outFilterMismatchNoverLmax 0.12",
+        doSoftclipping = "no"
+    threads: 15
+    log: "Mapping/log/STAR_mapping.{sample}.log"
+    shell: """
+        module load STAR/2.6.0b samtools
+        STAR --runThreadN {threads} --runMode alignReads --outFilterMultimapNmax 100 --winAnchorMultimapNmax 100 --alignEndsType EndToEnd --alignIntronMax {params.maxIntronLength} --readFilesIn {input[0]} {input[1]} --readFilesCommand zcat --outFileNamePrefix {params.outprefix} --outSAMtype BAM SortedByCoordinate {params.filterMaxMismatch} {params.filterMaxMismatchrate} --alignSoftClipAtReferenceEnds {params.doSoftclipping} --outSAMunmapped Within --sjdbGTFfile {params.genes} --genomeDir {params.genomeDir} > {log}
+	      samtools index {params.outprefix}Aligned.sortedByCoord.out.bam
+        """
+
+
+
+#Step 4: bigwig generation
+rule bamCoverage_coverage:
+    input:
+        rules.align2genome.output
+    output:
+        "bamCoverage/{sample}.coverage.bw"
+    params:
+        binSize = 1,
+        blacklist = "/data/sawarkar/hummel/2017_11_09_PolII_ReSeq_P180/hg38.blacklist1.bed"
+    log: "bamCoverage/log/bamCoverage.{sample}.coverage.log"
+    threads: 20
+    shell: """
+        module load deeptools/3.1.2
+        bamCoverage -b {input[0]} -p {threads} -o {output} --binSize {params.binSize} --blackListFileName {params.blacklist} --skipNAs &> {log}
+        """
+
+
+rule bamCoverage_coverage_offset:
+    input:
+        rules.align2genome.output
+    output:
+        "bamCoverage/{sample}.coverage.offset.bw"
+    params:
+        do5prime = '--Offset 1 --samFlagInclude 64',
+        binSize = 1,
+        blacklist = "/data/sawarkar/hummel/2017_11_09_PolII_ReSeq_P180/hg38.blacklist1.bed"
+    log: "bamCoverage/log/bamCoverage.{sample}.coverage.offset.log"
+    threads: 20
+    shell: """
+        module load deeptools/3.1.2
+        bamCoverage -b {input[0]} -p {threads} -o {output} --binSize {params.binSize} --blackListFileName {params.blacklist} {params.do5prime} --skipNAs &> {log}
+        """
