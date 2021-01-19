@@ -11,14 +11,17 @@ analyzeProseq <- function(samples, bgCov, geneCov, counts, agg, condition, batch
   
   # Background signal filtering
   bgCov$length <- bgCov$end - bgCov$start
+
   normBg <- (bgCov[, c(4:(length(samples) + 3))] * 10) / bgCov$length
   colnames(normBg) <- samples
   cutoff <- colMeans(normBg)
   
+
   # Long gene end signal for size factor generation  
   geneCov2 <- geneCov[(geneCov[, c(7:(length(samples) + 6))] / (geneCov$end - geneCov$start) > cutoff), c(4, 7:(length(samples) + 6))]
   colnames(geneCov2) <- c("gene", samples)
   geneCov2 <- geneCov2[!is.na(geneCov2$gene), ]
+  
   sizeFact <- colSums(geneCov2[, c(2:ncol(geneCov2))]) / mean(colSums(geneCov2[, c(2:ncol(geneCov2))]))
   
   print(sizeFact)
