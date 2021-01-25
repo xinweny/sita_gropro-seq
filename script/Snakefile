@@ -44,43 +44,42 @@ def custom_param(param, default):
     except KeyError:
         return default
 
-def infer_strandedness(bedgenome_path, bam_path):
-    p = subprocess.Popen(['infer_experiment.py', '-r', bedgenome_path, '-i', bam_path],
-            stdout=subprocess.PIPE)
-    output = str(p.stdout.read())
+# def infer_strandedness(bedgenome_path, bam_path):
+#     p = subprocess.Popen(['infer_experiment.py', '-r', bedgenome_path, '-i', bam_path],
+#             stdout=subprocess.PIPE)
+#     output = str(p.stdout.read())
 
-    print(output)
+#     print(output)
 
-    rseqc_out = output.split('\\n')
-    fr_firststrand = float(rseqc_out[5].split(' ')[-1])
-    fr_secondstrand = float(rseqc_out[4].split(' ')[-1])
+#     rseqc_out = output.split('\\n')
+#     fr_firststrand = float(rseqc_out[5].split(' ')[-1])
+#     fr_secondstrand = float(rseqc_out[4].split(' ')[-1])
 
-    threshold = 0.8
+#     threshold = 0.8
 
-    if fr_firststrand > threshold:
-        library_type = 'fr-firststrand'
-    elif fr_secondstrand > threshold:
-        library_type = 'fr-secondstrand'
-    else:
-        library_type = 'fr-unstranded'
+#     if fr_firststrand > threshold:
+#         library_type = 'fr-firststrand'
+#     elif fr_secondstrand > threshold:
+#         library_type = 'fr-secondstrand'
+#     else:
+#         library_type = 'fr-unstranded'
 
-    if library_type == 'fr-firststrand' and LAYOUT == 'PAIRED':
-        strandedness = "-s"
-    elif library_type == 'fr-secondstrand' and LAYOUT == 'PAIRED':
-        strandedness = "-S"
-    elif library_type == 'fr-firststrand' and LAYOUT == 'SINGLE':
-        strandedness = "-s"
-    elif library_type == 'fr-secondstrand' and LAYOUT == 'SINGLE':
-        strandedness = "-S"
-    elif library_type == 'fr-unstranded':
-        strandedness = ""
+#     if library_type == 'fr-firststrand' and LAYOUT == 'PAIRED':
+#         strandedness = "-s"
+#     elif library_type == 'fr-secondstrand' and LAYOUT == 'PAIRED':
+#         strandedness = "-S"
+#     elif library_type == 'fr-firststrand' and LAYOUT == 'SINGLE':
+#         strandedness = "-s"
+#     elif library_type == 'fr-secondstrand' and LAYOUT == 'SINGLE':
+#         strandedness = "-S"
+#     elif library_type == 'fr-unstranded':
+#         strandedness = ""
 
-    return strandedness
+#     return strandedness
 
 #### Config ####
 configfile: "config/config.yaml"
 workdir: config['base']
-localrules: all
 
 PREFIX = f"data/{config['GSE']}"
 
@@ -200,11 +199,11 @@ rule star_align:
         rules.filter_ribo_paired.output if LAYOUT == 'PAIRED' else rules.filter_ribo_single.output
     output:
         f"{PREFIX}/map/{{sample}}.bam",
-	      f"{PREFIX}/map/{{sample}}.bam.bai"
+	    f"{PREFIX}/map/{{sample}}.bam.bai"
     params:
         job_name = f"{config['GSE']}_{{sample}}_STAR",
         genome_dir = config[ORGANISM]['star'],
-	      genes_gtf = config[ORGANISM]['genes_gtf'],
+	    genes_gtf = config[ORGANISM]['genes_gtf'],
         prefix = f"{PREFIX}/map/{{sample}}"
     resources:
         time_min = 30,
@@ -213,17 +212,24 @@ rule star_align:
     shell:
         """
         STAR --runThreadN {resources.cpus} \
-        --runMode alignReads --outFilterMultimapNmax 100 --winAnchorMultimapNmax 100 --alignEndsType EndToEnd \
+        --runMode alignReads \
+        --outFilterMultimapNmax 100 \
+        --winAnchorMultimapNmax 100 \
+        --alignEndsType EndToEnd \
         --alignIntronMax 1 \
-        --readFilesIn {input} --readFilesCommand zcat \
+        --readFilesIn {input} \
+        --readFilesCommand zcat \
         --outFileNamePrefix {params.prefix} \
         --outSAMtype BAM SortedByCoordinate \
-        --outFilterMismatchNmax 3 --outFilterMismatchNoverLmax 0.12 \
+        --outFilterMismatchNmax 3 \
+        --outFilterMismatchNoverLmax 0.12 \
         --alignSoftClipAtReferenceEnds No \
         --outSAMunmapped Within \
         --sjdbGTFfile {params.genes_gtf} --genomeDir {params.genome_dir} > {log}
+
         mv {params.prefix}Aligned.sortedByCoord.out.bam {params.prefix}.bam
-	      samtools index {params.prefix}.bam
+
+	    samtools index {params.prefix}.bam
         """
 
 # Step 4: bigwig generation
