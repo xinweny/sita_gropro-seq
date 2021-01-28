@@ -1,6 +1,7 @@
 #### Packages ####
 import glob, os
 import pandas as pd
+import math
 
 #### Functions ####
 def get_layout(metadata_path):
@@ -44,6 +45,10 @@ def custom_param(param, default):
     except KeyError:
         return default
 
+def roundup(x, power):
+    tens = 10 ** power
+    return int(math.ceil(x / tens)) * tens
+
 # def infer_strandedness(bedgenome_path, bam_path):
 #     p = subprocess.Popen(['infer_experiment.py', '-r', bedgenome_path, '-i', bam_path],
 #             stdout=subprocess.PIPE)
@@ -83,6 +88,7 @@ workdir: config['base']
 
 PREFIX = f"data/{config['GSE']}"
 
+# Get layout and organism info from SraRunTable file (obtainable from SRA Run Selector)、otherwise specify on command line
 if os.path.exists(f"{PREFIX}/SraRunTable_{config['GSE']}.txt"):
     LAYOUT = get_layout(f"{PREFIX}/SraRunTable_{config['GSE']}.txt")
     ORGANISM = get_organism(f"{PREFIX}/SraRunTable_{config['GSE']}.txt")
@@ -100,8 +106,8 @@ rule all:
         expand(f"{PREFIX}/bigwig/{{sample}}.coverage.bw", sample=SAMPLES),
         expand(f"{PREFIX}/bigwig/{{sample}}.coverage.offset.bw", sample=SAMPLES),
         f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_GeneDesertCounts.txt",
-        f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_LongGeneEndCounts.txt",
-        f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_GeneCounts.txt"
+        f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_LongGeneEndCounts.txt"
+        # f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_GeneCounts.txt"
 
 # Step 1: Remove sequencing adapters from reads
 rule trimgalore_single:
@@ -148,7 +154,7 @@ rule filter_ribo_single:
     input:
         rules.trimgalore_single.output
     output:
-        f"{PREFIX}/map/{{sample}}_rRNA_filtered.fq.gz"
+        f"{PREFIX}/fastq/{{sample}}_rRNA_filtered.fq.gz"
     params:
         job_name = f"{config['GSE']}_{{sample}}_ALIGNRIBO_SINGLE",
         input_command = lambda wildcards, input: f"-U {input}",
@@ -172,8 +178,8 @@ rule filter_ribo_paired:
     input:
         rules.trimgalore_paired.output
     output:
-        f"{PREFIX}/map/{{sample}}_rRNA_filtered_R1.fq.gz",
-        f"{PREFIX}/map/{{sample}}_rRNA_filtered_R2.fq.gz"
+        f"{PREFIX}/fastq/{{sample}}_rRNA_filtered_R1.fq.gz",
+        f"{PREFIX}/fastq/{{sample}}_rRNA_filtered_R2.fq.gz"
     params:
         job_name = f"{config['GSE']}_{{sample}}_ALIGNRIBO_PAIRED",
         input_command = lambda wildcards, input: f"-1 {input[0]} -2 {input[1]}",
@@ -278,56 +284,81 @@ rule generate_counts:
     input:
         expand(f"{PREFIX}/map/{{sample}}.bam", sample=SAMPLES)
     output:
-        gene_bed = f"{config[ORGANISM]['genes_gtf'][:-4]}.bed",
+        gene_bed = f"{PREFIX}/bed/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}.bed",
+        gene_body_bed = f"{PREFIX}/bed/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}_GeneBody.bed",
+        promoter_bed = f"{PREFIX}/bed/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}_Promoter.bed",
         long_gene_bed = f"{PREFIX}/bed/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}_LongGeneEnd_{config['treatment_min']}min.bed",
         gene_desert_bed = f"{PREFIX}/bed/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}_GeneDesert.bed",
         gene_desert_counts = f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_GeneDesertCounts.txt",
         long_gene_counts = f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_LongGeneEndCounts.txt",
-        gene_counts = f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_GeneCounts.txt"
+        promoter_counts = f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_PromoterCounts.txt"
+        # gene_body_counts = f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_GeneBodyCounts.txt"
     params:
         # strandedness = lambda wildcards, input: infer_strandedness(config[ORGANISM]['gene_bed'], input[0]),
         genes_gtf = config[ORGANISM]['genes_gtf'],
         output_bed_prefix = f"{PREFIX}/bed/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}",
+        bedtools_genome = config[ORGANISM]['bedtools_genome'],
         treatment_min = int(config['treatment_min']),
-        sample_names = "\t".join(SAMPLES),
-        long_gene_thresh = int(config['treatment_min']) * 6000,
-        long_gene_start = (int(config['treatment_min']) * 6000) - 30000,
+        sample_names = "\\t".join(SAMPLES),
+        long_gene_thresh = roundup(int(config['treatment_min']) * 6000,
+                                   len(str(int(config['treatment_min']) * 6000)) - 1),
+        long_gene_length = int(config['treatment_min']) * 6000,
+        shift = 10000,
+        gene_desert_thresh = 1000000,
+        promoter_width = 250,
+        tss_shift = 250,
+        tes_shift = 500,
         job_name = f"{config['GSE']}_GENERATECOUNTS"
     resources:
         time_min = 60,
         cpus = 1
     shell:
         """
-        # Generate gene BED file
+        # Generate gene BED file sed 's/^/chr/'
         awk '$3 == "gene" {{ OFS="\\t"; print $0 }}' {params.genes_gtf} | \
         awk '{{ OFS="\\t"; print $1,$4,$5,$10,$6,$7 }}' | \
-        sed 's/[";]//g' | sort -k1,1V -k2,2n | sed 's/^/chr/' | egrep -v '^H' > \
+        sed 's/[";]//g' | sort -k1,1V -k2,2n | egrep -v '^H' > \
         {output.gene_bed}
 
         # Generate long-end gene BED file
-        awk '{{ OFS = "\\t"; if($3-$2 >= {params.long_gene_thresh} && $6 == "+") print $1,$2+{params.long_gene_start},$3-10000,$4,$5,$6; \
-        else if($3-$2 >= {params.long_gene_thresh} && $6 == "-") print $1,$2+10000,$3-{params.long_gene_start},$4,$5,$6 }}' \
+        awk '{{ OFS = "\\t"; if($3-$2 >= {params.long_gene_thresh} && $6 == "+") print $1,$2+{params.long_gene_length}+{params.shift},$3-{params.shift},$4,$5,$6; \
+        else if($3-$2 >= {params.long_gene_thresh} && $6 == "-") print $1,$2+{params.shift},$3-{params.long_gene_length}-{params.shift},$4,$5,$6 }}' \
         {output.gene_bed} > {output.long_gene_bed}
 
         # Generate gene desert BED file
         bedtools closest -a {output.gene_bed} -b {output.gene_bed} -N -iu -D a | sed 's/[";]//g' | \
-        awk '{{ OFS="\\t"; if($6 == "+" && $13 > 1000000) print $1,$3+10000,$3+$13-10000; \
-        else if( $6 == "-" && $13 > 1000000) print $1,$2-$13+10000,$2-10000 }}' > \
+        awk '{{ OFS="\\t"; if($6 == "+" && $13 > {params.gene_desert_thresh}) print $1,$3+{params.shift},$3+$13-{params.shift}; \
+        else if( $6 == "-" && $13 > {params.gene_desert_thresh}) print $1,$2-$13+{params.shift},$2-{params.shift} }}' > \
         {params.output_bed_prefix}_GeneDesertDownstream.bed
 
         bedtools closest -a {output.gene_bed} -b {output.gene_bed} -N -id -D a | sed 's/[";]//g' | \
-        awk '{{ OFS="\\t"; if($6 == "+" && $13 < -1000000) print $1,$2+$13+10000,$2-10000; \
-        else if($6 == "-" && $13 < -1000000) print $1,$3+10000,$3-$13-10000 }}' > \
+        awk '{{ OFS="\\t"; if($6 == "+" && $13 < -{params.gene_desert_thresh}) print $1,$2+$13+{params.shift},$2-{params.shift}; \
+        else if($6 == "-" && $13 < -{params.gene_desert_thresh}) print $1,$3+{params.shift},$3-$13-{params.shift} }}' > \
         {params.output_bed_prefix}_GeneDesertUpstream.bed
 
         cat {params.output_bed_prefix}_GeneDesertDownstream.bed {params.output_bed_prefix}_GeneDesertUpstream.bed | sort -k1,1V -k2,2n | \
         bedtools merge -i stdin > {output.gene_desert_bed}
 
+        # Generate promoter and gene body BED files
+        awk '$3 == "transcript" {{ print }}' {params.genes_gtf} | gtf2bed | \
+        awk '{{ OFS="\\t"; if($6 == "+") print $1,$2,$2+1,$4,$5,$6,$13; \
+        else if($6 == "-") print $1,$3-1,$3,$4,$5,$6,$13 }}' | sed 's/[";]//g' |
+        bedtools slop -i stdin -g {params.bedtools_genome} -b {params.promoter_width} > \
+        {output.promoter_bed}
+
+        awk '$3 == "transcript" {{ print }}' {params.genes_gtf} | gtf2bed | \
+        awk '{{ OFS="\\t"; if($6 == "+") print $1,$2+{params.tss_shift},$3-{params.tes_shift},$4,$5,$6,$13; \
+        else if($6 == "-") print $1,$2+{params.tes_shift},$3-{params.tss_shift},$4,$5,$6,$13 }}' | sed 's/[";]//g' > \
+        {output.gene_body_bed}
+
         # Counting with bedtools multicov
-        bedtools multicov -S -bams {input} -bed {output.gene_bed} | \
-        sed '1 i chr\tstart\tend\tname\tscore\tstrand\t{params.sample_names}' > {output.gene_counts}
+        bedtools multicov -S -bams {input} -bed {output.promoter_bed} | \
+        sed '1 i chr\\tstart\\tend\\tname\\tscore\\tstrand\\ttranscript_id\\t{params.sample_names}' > {output.promoter_counts}
         bedtools multicov -S -bams {input} -bed {output.long_gene_bed} | \
-        sed '1 i chr\tstart\tend\tname\tscore\tstrand\t{params.sample_names}' > {output.long_gene_counts}
+        sed '1 i chr\\tstart\\tend\\tname\\tscore\\tstrand\\t{params.sample_names}' > {output.long_gene_counts}
         bedtools multicov -S -bams {input} -bed {output.gene_desert_bed} | \
-        sed '1 i chr\tstart\tend\t{params.sample_names}' > {output.gene_desert_counts}
+        sed '1 i chr\\tstart\\tend\\t{params.sample_names}' > {output.gene_desert_counts}
+
+        # Filter gene body BED file and count with bedtools multicov
+        # script/filter_transcripts.py
         """
