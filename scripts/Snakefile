@@ -106,8 +106,9 @@ rule all:
         expand(f"{PREFIX}/bigwig/{{sample}}.coverage.bw", sample=SAMPLES),
         expand(f"{PREFIX}/bigwig/{{sample}}.coverage.offset.bw", sample=SAMPLES),
         f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_GeneDesertCounts.txt",
-        f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_LongGeneEndCounts.txt"
-        # f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_GeneCounts.txt"
+        f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_LongGeneEndCounts.txt",
+        f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_PromoterCounts.txt",
+        f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_GeneBodyCounts.txt"
 
 # Step 1: Remove sequencing adapters from reads
 rule trimgalore_single:
@@ -286,13 +287,14 @@ rule generate_counts:
     output:
         gene_bed = f"{PREFIX}/bed/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}.bed",
         gene_body_bed = f"{PREFIX}/bed/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}_GeneBody.bed",
+        gene_body_bed_filtered = f"{PREFIX}/bed/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}_GeneBody_filtered.bed",
         promoter_bed = f"{PREFIX}/bed/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}_Promoter.bed",
         long_gene_bed = f"{PREFIX}/bed/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}_LongGeneEnd_{config['treatment_min']}min.bed",
         gene_desert_bed = f"{PREFIX}/bed/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}_GeneDesert.bed",
         gene_desert_counts = f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_GeneDesertCounts.txt",
         long_gene_counts = f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_LongGeneEndCounts.txt",
-        promoter_counts = f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_PromoterCounts.txt"
-        # gene_body_counts = f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_GeneBodyCounts.txt"
+        promoter_counts = f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_PromoterCounts.txt",
+        gene_body_counts = f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_GeneBodyCounts.txt"
     params:
         # strandedness = lambda wildcards, input: infer_strandedness(config[ORGANISM]['gene_bed'], input[0]),
         genes_gtf = config[ORGANISM]['genes_gtf'],
@@ -308,13 +310,14 @@ rule generate_counts:
         promoter_width = 250,
         tss_shift = 250,
         tes_shift = 500,
+        rpm_thresh = 1,
         job_name = f"{config['GSE']}_GENERATECOUNTS"
     resources:
         time_min = 60,
         cpus = 1
     shell:
         """
-        # Generate gene BED file sed 's/^/chr/'
+        # Generate gene BED file
         awk '$3 == "gene" {{ OFS="\\t"; print $0 }}' {params.genes_gtf} | \
         awk '{{ OFS="\\t"; print $1,$4,$5,$10,$6,$7 }}' | \
         sed 's/[";]//g' | sort -k1,1V -k2,2n | egrep -v '^H' > \
@@ -351,14 +354,22 @@ rule generate_counts:
         else if($6 == "-") print $1,$2+{params.tes_shift},$3-{params.tss_shift},$4,$5,$6,$13 }}' | sed 's/[";]//g' > \
         {output.gene_body_bed}
 
-        # Counting with bedtools multicov
-        bedtools multicov -S -bams {input} -bed {output.promoter_bed} | \
-        sed '1 i chr\\tstart\\tend\\tname\\tscore\\tstrand\\ttranscript_id\\t{params.sample_names}' > {output.promoter_counts}
+        # Count reads at regions for normalisation
         bedtools multicov -S -bams {input} -bed {output.long_gene_bed} | \
         sed '1 i chr\\tstart\\tend\\tname\\tscore\\tstrand\\t{params.sample_names}' > {output.long_gene_counts}
+
         bedtools multicov -S -bams {input} -bed {output.gene_desert_bed} | \
         sed '1 i chr\\tstart\\tend\\t{params.sample_names}' > {output.gene_desert_counts}
 
-        # Filter gene body BED file and count with bedtools multicov
-        # script/filter_transcripts.py
+        # Count reads at promoter for transcript filtering
+        bedtools multicov -S -bams {input} -bed {output.promoter_bed} | \
+        sed '1 i chr\\tstart\\tend\\tname\\tscore\\tstrand\\ttranscript_id\\t{params.sample_names}' > {output.promoter_counts}
+
+        # Filter BED file based on promoter activity and count gene body regions
+        script/filter_transcripts.py -p {output.promoter_counts} -b {output.gene_body_bed} \
+        -r {params.rpm_thresh} \
+        -o {output.gene_body_bed_filtered}
+        
+        bedtools multicov -S -bams {input} -bed {output.gene_body_bed_filtered} | \
+        sed '1 i chr\\tstart\\tend\\tname\\tscore\\tstrand\\t{params.sample_names}' > {output.gene_body_counts}
         """
