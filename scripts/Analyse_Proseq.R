@@ -133,7 +133,7 @@ background <- read.table(glue("./processed/{proj}_{treatment_time}min_GeneDesert
                          sep="\t", header=T)
 longend <- read.table(glue("./processed/{proj}_{treatment_time}min_LongGeneEndCounts.txt"),
                       sep="\t", header=T)
-protcoding <- read.table(glue("./processed/{proj}_{treatment_time}min_GeneCounts.txt"),
+protcoding <- read.table(glue("./processed/{proj}_{treatment_time}min_GeneBodyCounts.txt"),
                          sep="\t", header=T)
 
 # Format conditions and replicates

@@ -8,7 +8,12 @@ def calculate_rpm(prom_df):
     counts_df = prom_df.drop(prom_df.iloc[:, 0:7], axis=1)
 
     # Calculate RPM
+    print("Calculating RPM...")
+
     sf = counts_df.sum(axis=0) / 1000000
+
+    print(sf)
+
     rpm_df = counts_df.div(sf, axis=1)
 
     # Replace raw counts with RPM values
@@ -17,16 +22,22 @@ def calculate_rpm(prom_df):
 
     return prom_df
 
-def filter_transcripts(prom_df, gene_body_df, rpm_thresh):
+def filter_transcripts(prom_df, gene_body_df, rpm_thresh, length_thresh):
     # Make counts table
     counts_df = prom_df.drop(prom_df.iloc[:, 0:7], axis=1)
     samples = len(counts_df.columns)
 
-    # Filter on promoter activeness
+    # Filter on promoter activeness and transcript length
+    print(f"Filtering transcripts by mean RPM > {rpm_thresh}...")
+
     prom_df['mean_rpm'] = counts_df.mean(axis=1)
-    filt_df = prom_df[prom_df['mean_rpm'] > rpm_thresh]
+    filt_df = prom_df[(prom_df['mean_rpm'] > rpm_thresh)]
+
+    print(f"Keeping {len(filt_df)} out of {len(prom_df)} transcripts ({len(filt_df) / len(prom_df) * 100}%).")
 
     # Select the most active, downstream transcript per gene
+    print("Selecting the most active, downstream transcript per gene...")
+
     gene_ids = filt_df['name'].unique()
 
     transcripts = []
@@ -47,7 +58,12 @@ def filter_transcripts(prom_df, gene_body_df, rpm_thresh):
             transcripts.append(transcripts_df['transcript_id'].values[0])
 
     # Filter out gene body BED file with filtered transcript ID list
-    filt_bed_df = gene_body_df[gene_body_df['transcript_id'].isin(transcripts)]
+    print(f"Filtering gene body BED file with filtered transcript ID list and length > {length_thresh}...")
+    filt_bed_df = gene_body_df[(gene_body_df['transcript_id'].isin(transcripts)) &
+                               ((gene_body_df['end'] - gene_body_df['start']) > length_thresh)]
+
+    print(f"Keeping {len(filt_bed_df)} out of {len(gene_body_df)} transcripts ({len(filt_bed_df) / len(gene_body_df) * 100}%).")
+
     filt_bed_df = filt_bed_df.drop(['transcript_id'], axis=1)
 
     return filt_bed_df
@@ -58,6 +74,7 @@ def main():
     parser.add_argument('-p', required=True, help='Path to the promoter counts table.')
     parser.add_argument('-b', required=True, help='Path to gene body BED file')
     parser.add_argument('-r', required=True, help='RPM threshold for filtering.')
+    parser.add_argument('-l', required=True, help='Transcript length threshold (bp) for filtering.')
     parser.add_argument('-o', required=True, help="Path to output file.")
 
     args = parser.parse_args()
@@ -66,15 +83,18 @@ def main():
     gene_body_df = pd.read_csv(args.b, sep='\t', names=prom_df.columns[0:7])
 
     rpm_thresh = float(args.r)
+    length_thresh = int(args.l)
 
     # Calculate RPM across raw counts table
     rpm_df = calculate_rpm(prom_df)
 
     # Filter transcripts to select the most active and downstream TSS
-    filt_df = filter_transcripts(prom_df, gene_body_df, rpm_thresh)
+    filt_df = filter_transcripts(prom_df, gene_body_df, rpm_thresh, length_thresh)
 
     # Write to BED output
-    filt_df.to_csv(args.o, header=False, sep='\t')
+    print(f"Saving output {args.o}...")
+
+    filt_df.to_csv(args.o, index=False, header=False, sep='\t')
 
 #### Execute code ####
 if __name__ == "__main__":
