@@ -24,7 +24,7 @@ def calculate_rpm(prom_df):
 
     return prom_df
 
-def filter_transcripts(prom_df, gb_df, rpm_thresh, dist_thresh, gene_bed, chrom_sizes):
+def filter_transcripts(prom_df, gb_df, rpm_thresh, dist_thresh, gene_bed, chrom_sizes, sl, sr):
     # Make counts table
     counts_df = prom_df.drop(prom_df.iloc[:, 0:7], axis=1)
     samples = len(counts_df.columns)
@@ -69,7 +69,7 @@ def filter_transcripts(prom_df, gb_df, rpm_thresh, dist_thresh, gene_bed, chrom_
     # Make pybedtools objects from BED files and slop to restore original transcript coordinates
     print(f"Keeping gene body transcripts with min distance to closest gene > {dist_thresh}...")
     filt_gb_bt = pbt.BedTool.from_dataframe(filt_gb_df.iloc[:, 0:7])
-    filt_gb_bt = filt_gb_bt.slop(g=chrom_sizes, s=True, l=250, r=500)
+    filt_gb_bt = filt_gb_bt.slop(g=chrom_sizes, s=True, l=sl, r=sr)
     filt_gb_bt = filt_gb_bt.sort()
 
     # Load gene BED file as data frame
@@ -85,7 +85,7 @@ def filter_transcripts(prom_df, gb_df, rpm_thresh, dist_thresh, gene_bed, chrom_
 
     # Filter for genes with closest distance > threshold
     closest_df = closest_df[(closest_df[closest_df.columns[-1]] > dist_thresh) |
-                                  (closest_df[closest_df.columns[-1]] > -dist_thresh)]
+                            (closest_df[closest_df.columns[-1]] > -dist_thresh)]
 
     transcripts = list(closest_df[closest_df.columns[6]])
 
@@ -103,10 +103,12 @@ def main():
     parser = argparse.ArgumentParser(description='Filter gene body transcripts for PRO-seq analysis.')
     parser.add_argument('-p', required=True, help='Path to the promoter counts table.')
     parser.add_argument('-b', required=True, help='Path to gene body counts file')
-    parser.add_argument('-r', required=True, help='RPM threshold for filtering.')
+    parser.add_argument('-r', required=True, type=float, help='RPM threshold for filtering.')
     parser.add_argument('-g', required=True, help='Path to gene BED file for distance filtering.')
     parser.add_argument('-c', required=True, help='Path to genome chrom.sizes file.')
-    parser.add_argument('-d', required=True, help='Min distance (bp) to closest transcript for filtering.')
+    parser.add_argument('-d', required=True, type=int, help='Min distance (bp) to closest transcript for filtering.')
+    parser.add_argument('-sl', required=True, type=int, help='TSS shift (bp).')
+    parser.add_argument('-sr', required=True, type=int, help='TES shift (bp).')
     parser.add_argument('-o', required=True, help='Path to output file.')
 
     args = parser.parse_args()
@@ -119,8 +121,9 @@ def main():
 
     # Filter transcripts to select the most active and downstream TSS
     filt_df = filter_transcripts(prom_df=prom_df, gb_df=gb_df,
-                                 rpm_thresh=float(args.r), dist_thresh=int(args.d),
-                                 gene_bed=args.g, chrom_sizes=args.c)
+                                 rpm_thresh=args.r, dist_thresh=args.d,
+                                 gene_bed=args.g, chrom_sizes=args.c,
+                                 sl=args.sl, sr=args.sr)
 
     # Write filtered count table to output
     print(f"Saving output {args.o}...")

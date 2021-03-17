@@ -1,12 +1,13 @@
 #### Packages ####
 library(stringr)
 library(glue)
+library(ggplot2)
 
 #### Config ####
 setwd("/Users/Pomato/mrc/project/sita_gropro-seq")
 
 #### Functions ####
-analyzeProseq <- function(samples, bgCov, geneCov, counts, agg, condition, batch, case, control) {
+analyzeProseq <- function(samples, bgCov, geneCov, counts, agg, condition, batch, case, control, alpha, proj) {
   require(DESeq2)
   
   # Background signal filtering
@@ -58,36 +59,40 @@ analyzeProseq <- function(samples, bgCov, geneCov, counts, agg, condition, batch
   
   result <- as.data.frame(results(ddsProseq, 
                                   contrast=c("condition", case, control), 
-                                  alpha=0.05))
+                                  alpha=alpha))
   
   if (!agg) {
     vsd <- vst(ddsProseq)
     
-    p1 <- plotPCA(vsd, intgroup=c("condition", "batch"))
+    png(glue("./processed/{proj}_PCA_{case}_vs_{control}.png"),
+        res=100)
+    p1 <- plotPCA(vsd, intgroup=c("condition")) +
+      ggtitle(proj)
     print(p1)
+    dev.off()
   }
 
   return(result)
 }
 
-plotMAProseq <- function (df, cutoff, label, control, treatment) {
+plotMAProseq <- function (df, cutoff, label, control, treatment, alpha, proj) {
   require(ggplot2)
   require(ggrepel)
   require(dplyr)
   require(glue)
   
-  df$color <- ifelse(is.na(df$padj), "grey", ifelse(df$padj < 0.05, "red", "grey"))
+  df$color <- ifelse(is.na(df$padj), "grey", ifelse(df$padj < alpha, "red", "grey"))
   df$shape <- ifelse(df$log2FoldChange > cutoff , 24, ifelse(df$log2FoldChange < -cutoff, 25, 21))
   df$log2FoldChange[df$log2FoldChange > cutoff] <- cutoff
   df$log2FoldChange[df$log2FoldChange < -cutoff] <- -cutoff
   
-  nUp <- nrow(filter(df, !is.na(padj) & padj < 0.05 & log2FoldChange > 0))
-  nDown <- nrow(filter(df, !is.na(padj) & padj < 0.05 & log2FoldChange < 0))
+  nUp <- nrow(filter(df, !is.na(padj) & padj < alpha & log2FoldChange > 0))
+  nDown <- nrow(filter(df, !is.na(padj) & padj < alpha & log2FoldChange < 0))
   ratioUpDown <- nUp / nDown
   message("Ratio of up:down regulated genes: ", ratioUpDown)
   
   if (label) {
-    df$label <- ifelse(!is.na(df$padj) & df$padj < 0.05, rownames(df), "")
+    df$label <- ifelse(!is.na(df$padj) & df$padj < alpha, rownames(df), "")
     gg <- ggplot(data=df, aes(x=log10(baseMean), y=log2FoldChange, label=label)) + 
       theme_classic() + 
       scale_shape_identity() + 
@@ -101,7 +106,7 @@ plotMAProseq <- function (df, cutoff, label, control, treatment) {
     
   } else {
     gg <- ggplot(data=df, aes(x=log10(baseMean), y=log2FoldChange)) + 
-      labs(title=glue("{treatment} vs. {control}"),
+      labs(title=glue("{proj}: {treatment} vs. {control} (p < {alpha})"),
            caption=glue("UP={nUp}, DOWN={nDown}")) +
       theme_classic() + 
       scale_shape_identity() + 
@@ -125,35 +130,49 @@ format_condition <- function (colnames) {
 }
 
 #### Code ####
-# Load files
-proj <- "GSE112379"
-treatment_time <- 90
+# Parameters
+proj <- "GSE124916"
+treatment_time <- 10
 
-background <- read.table(glue("./processed/{proj}_{treatment_time}min_GeneDesertCounts.txt"),
+control <- "Dex_noTNF_10min"
+case <- "Dex_TNF_10min"
+
+alpha <- 0.05
+
+remove.cols <- c()
+
+# Load files
+background <- read.table(glue("./processed/{proj}_GeneDesertCounts.txt"),
                          sep="\t", header=T)
 longend <- read.table(glue("./processed/{proj}_{treatment_time}min_LongGeneEndCounts.txt"),
                       sep="\t", header=T)
-protcoding <- read.table(glue("./processed/{proj}_{treatment_time}min_GeneBodyCounts_filtered.txt"),
+protcoding <- read.table(glue("./processed/{proj}_GeneBodyCounts_filtered.txt"),
                          sep="\t", header=T)
+
+if (length(remove.cols > 0)) {
+  protcoding <- protcoding[, !(names(protcoding) %in% remove.cols)]
+  longend <- longend[, !(names(longend) %in% remove.cols)]
+  background <- background[, !(names(background) %in% remove.cols)]
+}
 
 # Format conditions and replicates
 samples <- colnames(protcoding)[c(7:ncol(protcoding))]
 conditions <- format_condition(colnames(protcoding)[c(7:ncol(protcoding))])
 rep <- str_extract(conditions, "[^_][A-Za-z0-9]+$")
 
-control <- "HEK_NHS"
-case <- "HEK_HS"
-
 # PRO-seq analysis
 proteinCoding_PROseq <- analyzeProseq(samples=samples, 
                                    bgCov=background, geneCov=longend, counts=protcoding, 
                                    agg=FALSE,
                                    condition=conditions, batch=rep,
-                                   case=case, control=control)
+                                   case=case, control=control,
+                                   alpha=alpha,
+                                   proj=proj)
 
 # MA plot Pro-seq HS
 png(glue("./processed/{proj}_{treatment_time}min_{case}_vs_{control}.png"))
 plotMAProseq(df=proteinCoding_PROseq, control=control, treatment=case,
-             cutoff=4, label=FALSE)
+             cutoff=6, label=FALSE, alpha=alpha,
+             proj=proj)
 dev.off()
 

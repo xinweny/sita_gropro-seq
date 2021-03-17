@@ -6,7 +6,7 @@ homo_sapiens:
   bed_genome: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/GRCh38_gencode_r34/annotation/genes.bed"
   blacklist_bed: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/GRCh38_gencode_r34/annotation/blacklist.bed"
 mus_musculus:
-  bt_ribosomal: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/mouse/rrna"
+  bt_ribosomal: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/mouse/rrna/mouse"
   star: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/GRCm38_gencode_M25/STARIndex"
   genes_gtf: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/GRCm38_gencode_M25/annotation/genes.gtf"
   bed_genome: "/rds/project/rs2099/rds-rs2099-toxgenomics/shared/GRCm38_gencode_M25/annotation/genes.bed"

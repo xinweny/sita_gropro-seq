@@ -16,8 +16,7 @@ def get_organism(metadata_path):
     return organism_name.replace(' ', '_').lower()
 
 def get_samples(path, ext):
-    samples = set([os.path.basename(sample).replace(f".{ext}", '') for sample in glob.glob(f"{path}*.{ext}")
-              if not any(match in os.path.basename(sample) for match in ['trimmed', 'val'])])
+    samples = set([os.path.basename(sample).replace(f".{ext}", '') for sample in glob.glob(f"{path}*.{ext}")])
 
     if LAYOUT == 'PAIRED':
         samples = set([sample[:-2] for sample in samples])
@@ -26,17 +25,20 @@ def get_samples(path, ext):
 
 def get_raw_reads(wcs):
     if LAYOUT == 'PAIRED':  # Paired-end
-        return expand(f"{PREFIX}/fastq/{wcs.sample}_{{i}}.fastq.gz", i=[1, 2])
+        path = expand(f"{PREFIX}/fastq/{wcs.sample}_{{i}}.fastq.gz", i=[1, 2])
 
-    if LAYOUT == 'SINGLE':  # Single-end
-        return f"{PREFIX}/fastq/{wcs.sample}.fastq.gz"
+        if not os.path.exists(path[0]):
+            path = expand(f"{PREFIX}/fastq/other/{wcs.sample}_{{i}}.fastq.gz", i=[1, 2])
+        
+        return path
 
-def get_trimmed_reads(wcs):
-    if LAYOUT == 'PAIRED':  # Paired-end
-        return expand(f"{PREFIX}/fastq/{wcs.sample}_{{i}}_val_{{i}}.fq.gz", i=[1, 2])
+    elif LAYOUT == 'SINGLE':  # Single-end
+        path = f"{PREFIX}/fastq/{wcs.sample}.fastq.gz"
 
-    if LAYOUT == 'SINGLE':  # Single-end
-        return f"{PREFIX}/fastq/{wcs.sample}_trimmed.fq.gz"
+        if not os.path.exists(path):
+            path = f"{PREFIX}/fastq/other/{wcs.sample}.fastq.gz"
+
+        return path
 
 def custom_param(param, default):
     try:
@@ -60,7 +62,10 @@ def infer_strandedness(bedgenome_path, bam_path):
     fr_firststrand = float(rseqc_out[5].split(' ')[-1])
     fr_secondstrand = float(rseqc_out[4].split(' ')[-1])
 
-    threshold = 0.8
+    print(f"Fraction of reads to same strand: {fr_secondstrand}")
+    print(f"Fraction of reads to reverse strand: {fr_firststrand}")
+
+    threshold = 0.70
 
     if fr_firststrand > threshold:
         library_type = 'fr-firststrand'
@@ -69,14 +74,10 @@ def infer_strandedness(bedgenome_path, bam_path):
     else:
         library_type = 'fr-unstranded'
 
-    if library_type == 'fr-firststrand' and LAYOUT == 'PAIRED':
-        strandedness = "-s"
-    elif library_type == 'fr-secondstrand' and LAYOUT == 'PAIRED':
+    if library_type == 'fr-firststrand':
         strandedness = "-S"
-    elif library_type == 'fr-firststrand' and LAYOUT == 'SINGLE':
+    elif library_type == 'fr-secondstrand':
         strandedness = "-s"
-    elif library_type == 'fr-secondstrand' and LAYOUT == 'SINGLE':
-        strandedness = "-S"
     elif library_type == 'fr-unstranded':
         strandedness = ""
 
@@ -96,19 +97,26 @@ else:
     LAYOUT = config['layout']
     ORGANISM = config['organism']
 
-SAMPLES = get_samples(f"{PREFIX}/fastq/", 'fastq.gz')
+SAMPLES = get_samples(f"{PREFIX}/fastq/**/", 'fastq.gz')
+SELECT_SAMPLES = get_samples(f"{PREFIX}/fastq/", 'fastq.gz')
 
 #### Workflow ####
 rule all:
     input:
-        expand(f"{PREFIX}/map/{{sample}}.bam", sample=SAMPLES),
-        expand(f"{PREFIX}/map/{{sample}}.bam.bai", sample=SAMPLES),
-        expand(f"{PREFIX}/bigwig/{{sample}}.coverage.bw", sample=SAMPLES),
-        expand(f"{PREFIX}/bigwig/{{sample}}.coverage.offset.bw", sample=SAMPLES),
-        f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_GeneDesertCounts.txt",
-        f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_LongGeneEndCounts.txt",
-        f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_PromoterCounts.txt",
-        f"{PREFIX}/count/{config['GSE']}_{config['treatment_min']}min_GeneBodyCounts.txt"
+        expand(f"{PREFIX}/star/{{sample}}.bam", sample=SAMPLES),
+        expand(f"{PREFIX}/star/{{sample}}.bam.bai", sample=SAMPLES),
+#        expand(f"{PREFIX}/bigwig/{{sample}}.coverage.bw", sample=SAMPLES),
+#        expand(f"{PREFIX}/bigwig/{{sample}}.coverage.offset.bw", sample=SAMPLES),
+        f"{PREFIX}/bed_regions/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}.bed",
+        f"{PREFIX}/bed_regions/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}_GeneBody.bed",
+        f"{PREFIX}/bed_regions/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}_Promoter.bed",
+        f"{PREFIX}/bed_regions/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}_LongGeneEnd_{config['treatment_min']}min.bed",
+        f"{PREFIX}/bed_regions/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}_GeneDesert.bed",
+        f"{PREFIX}/bedtools_multicov/{config['GSE']}_GeneDesertCounts.txt",
+        f"{PREFIX}/bedtools_multicov/{config['GSE']}_{config['treatment_min']}min_LongGeneEndCounts.txt",
+        f"{PREFIX}/bedtools_multicov/{config['GSE']}_PromoterCounts.txt",
+        f"{PREFIX}/bedtools_multicov/{config['GSE']}_GeneBodyCounts.txt",
+        f"{PREFIX}/bedtools_multicov/{config['GSE']}_GeneBodyCounts_filtered.txt"
     params:
         job_name = f"{config['GSE']}_ALL"
     resources:
@@ -124,8 +132,8 @@ rule trimgalore_single:
     params:
         job_name = f"{config['GSE']}_{{sample}}_TRIMSINGLE"
     resources:
-        time_min = int(custom_param('trim_time', 60)),
-        cpus = int(custom_param('trim_cpus', 1))
+        time_min = int(custom_param('trim_time', 30)),
+        cpus = int(custom_param('trim_cpus', 12))
     log: f"{PREFIX}/fastq/logs/Trim_galore.{{sample}}.log"
     benchmark: f"{PREFIX}/fastq/.benchmark/Trim_galore.{{sample}}.benchmark"
     shell:
@@ -144,8 +152,8 @@ rule trimgalore_paired:
     params:
         job_name = f"{config['GSE']}_{{sample}}_TRIMPAIRED"
     resources:
-        time_min = int(custom_param('trim_time', 60)),
-        cpus = int(custom_param('trim_cpus', 2))
+        time_min = int(custom_param('trim_time', 30)),
+        cpus = int(custom_param('trim_cpus', 24))
     log: f"{PREFIX}/fastq/log/Trim_galore.{{sample}}.log"
     benchmark: f"{PREFIX}/fastq/.benchmark/Trim_galore.{{sample}}.benchmark"
     shell:
@@ -167,17 +175,17 @@ rule filter_ribo_single:
         output_command = lambda wildcards, output: f"--un-gz {output}",
         ribosomal = config[ORGANISM]['bt_ribosomal']
     resources:
-        time_min = int(custom_param('bt_time', 30)),
-        cpus = int(custom_param('bt_cpus', 8))
+        time_min = int(custom_param('bt_time', 60)),
+        cpus = int(custom_param('bt_cpus', 20))
     conda: "env/gropro-seq.yml"
-    log: f"{PREFIX}/map/log/{{sample}}_Bowtie2.rRNA.log"
+    log: f"{PREFIX}/fastq_filtered/log/{{sample}}_Bowtie2.rRNA.log"
     shell:
         """
-        bowtie2 --very-fast-local \
+        bowtie2 --very-fast-local --quiet \
         -x {params.ribosomal} \
         -p {resources.cpus} \
         {params.output_command} \
-        {params.input_command} 2> {log}
+        {params.input_command} > /dev/null 2> {log}
         """
 
 rule filter_ribo_paired:
@@ -192,17 +200,17 @@ rule filter_ribo_paired:
         output_command = lambda wildcards, output: f"--un-conc-gz {output[0].replace('R1.fq.gz', 'R%.fq.gz')}",
         ribosomal = config[ORGANISM]['bt_ribosomal']
     resources:
-        time_min = int(custom_param('bt_time', 30)),
-        cpus = int(custom_param('bt_cpus', 16))
+        time_min = int(custom_param('bt_time', 60)),
+        cpus = int(custom_param('bt_cpus', 30))
     conda: "env/gropro-seq.yml"
-    log: f"{PREFIX}/map/log/{{sample}}_Bowtie2.rRNA.log"
+    log: f"{PREFIX}/fastq_filtered/log/{{sample}}_Bowtie2.rRNA.log"
     shell:
         """
-        bowtie2 --very-fast-local \
+        bowtie2 --very-fast-local --quiet \
         -x {params.ribosomal} \
         -p {resources.cpus} \
         {params.output_command} \
-        {params.input_command} 2> {log}
+        {params.input_command} > /dev/null 2> {log}
         """
 
 # Step 3: map unmapped/non-ribosomal reads to genome
@@ -210,17 +218,17 @@ rule star_align:
     input:
         rules.filter_ribo_paired.output if LAYOUT == 'PAIRED' else rules.filter_ribo_single.output
     output:
-        f"{PREFIX}/map/{{sample}}.bam",
-	    f"{PREFIX}/map/{{sample}}.bam.bai"
+        bam = f"{PREFIX}/star/{{sample}}.bam",
+	    bai = f"{PREFIX}/star/{{sample}}.bam.bai"
     params:
         job_name = f"{config['GSE']}_{{sample}}_STAR",
         genome_dir = config[ORGANISM]['star'],
 	    genes_gtf = config[ORGANISM]['genes_gtf'],
-        prefix = f"{PREFIX}/map/{{sample}}"
+        prefix = f"{PREFIX}/star/{{sample}}"
     resources:
-        time_min = 30,
+        time_min = int(custom_param('star_time', 30)),
         cpus = 16
-    log: f"{PREFIX}/map/log/STAR_mapping.{{sample}}.log"
+    log: f"{PREFIX}/star/log/STAR_mapping.{{sample}}.log"
     shell:
         """
         STAR --runThreadN {resources.cpus} \
@@ -239,71 +247,30 @@ rule star_align:
         --outSAMunmapped Within \
         --sjdbGTFfile {params.genes_gtf} --genomeDir {params.genome_dir} > {log}
 
-        mv {params.prefix}Aligned.sortedByCoord.out.bam {params.prefix}.bam
+        mv {params.prefix}Aligned.sortedByCoord.out.bam {output.bam}
 
-	    samtools index {params.prefix}.bam
-        """
-
-# Step 4: bigwig generation
-rule bamcoverage_bigwig:
-    input:
-        f"{PREFIX}/map/{{sample}}.bam"
-    output:
-        f"{PREFIX}/bigwig/{{sample}}.coverage.bw"
-    params:
-        job_name = f"{config['GSE']}_{{sample}}_BAMCOV",
-        blacklist = config[ORGANISM]['blacklist_bed']
-    resources:
-        time_min = 60,
-        cpus = 20
-    conda: "env/gropro-seq.yml"
-    log: f"{PREFIX}/bigwig/log/bamCoverage.{{sample}}.coverage.log"
-    shell:
-        """
-        bamCoverage -b {input} -p {resources.cpus} -o {output} \
-        --binSize 1 \
-        --blackListFileName {params.blacklist} --skipNAs &> {log}
-        """
-
-rule bamcoverage_bigwig_offset:
-    input:
-        f"{PREFIX}/map/{{sample}}.bam"
-    output:
-        f"{PREFIX}/bigwig/{{sample}}.coverage.offset.bw"
-    params:
-        job_name = f"{config['GSE']}_{{sample}}_BAMCOVOFF",
-        blacklist = config[ORGANISM]['blacklist_bed']
-    resources:
-        time_min = 60,
-        cpus = 20
-    conda: "env/gropro-seq.yml"
-    log: f"{PREFIX}/bigwig/log/bamCoverage.{{sample}}.coverage.offset.log"
-    shell:
-        """
-        bamCoverage -b {input} -p {resources.cpus} -o {output} \
-        --binSize 1 --Offset 1 --samFlagInclude 64 \
-        --blackListFileName {params.blacklist} --skipNAs &> {log}
+	    samtools index {output.bam}
         """
 
 # Step 5: Generate counts tables for background, long genes and protein-coding genes
 rule generate_beds:
     output:
-        gene_bed = f"{PREFIX}/bed/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}.bed",
-        gene_body_bed = f"{PREFIX}/bed/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}_GeneBody.bed",
-        promoter_bed = f"{PREFIX}/bed/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}_Promoter.bed",
-        long_gene_bed = f"{PREFIX}/bed/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}_LongGeneEnd_{config['treatment_min']}min.bed",
-        gene_desert_bed = f"{PREFIX}/bed/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}_GeneDesert.bed"
+        gene_bed = f"{PREFIX}/bed_regions/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}.bed",
+        gene_body_bed = f"{PREFIX}/bed_regions/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}_GeneBody.bed",
+        promoter_bed = f"{PREFIX}/bed_regions/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}_Promoter.bed",
+        long_gene_bed = f"{PREFIX}/bed_regions/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}_LongGeneEnd_{config['treatment_min']}min.bed",
+        gene_desert_bed = f"{PREFIX}/bed_regions/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}_GeneDesert.bed"
     params:
         genes_gtf = config[ORGANISM]['genes_gtf'],
-        output_bed_prefix = f"{PREFIX}/bed/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}",
+        output_bed_prefix = f"{PREFIX}/bed_regions/{os.path.basename(config[ORGANISM]['genes_gtf'])[:-4]}",
         bedtools_genome = f"{config[ORGANISM]['star']}/chrNameLength.txt",
         treatment_min = int(config['treatment_min']),
         long_gene_length = int(config['treatment_min']) * 6000,
-        long_gene_thresh = roundup(int(config['treatment_min']) * 6000, len(str(int(config['treatment_min']) * 6000)) - 1),
+        long_gene_thresh = int(custom_param('long_gene_thresh', roundup(int(config['treatment_min']) * 6000, 5))),
         shift = 10000,
         gene_desert_thresh = 1000000,
-        transcript_id_col = 14 + 1,
-        promoter_width = 500,
+        transcript_id_col = 12 + 1,
+        promoter_width = 250,
         tss_shift = 2500,
         tes_shift = 500,
         transcript_length_thresh = 5000,
@@ -347,7 +314,7 @@ rule generate_beds:
             cat {params.output_bed_prefix}_GeneDesertDownstream.bed {params.output_bed_prefix}_GeneDesertUpstream.bed | sort -k1,1V -k2,2n | \
             bedtools merge -i stdin > {output.gene_desert_bed}
 
-            # Generate promoter and gene body BED files
+        # Generate promoter and gene body BED files
             awk '$3 == "transcript" {{ print }}' {params.genes_gtf} | gtf2bed | \
             awk '{{ OFS="\\t"; \
                 if($6 == "+") \
@@ -369,40 +336,46 @@ rule generate_beds:
 
 rule bedtools_multicov:
     input:
-        bams = expand(f"{PREFIX}/map/{{sample}}.bam", sample=SAMPLES),
+        bams = expand(f"{PREFIX}/star/{{sample}}.bam", sample=SELECT_SAMPLES),
+        gene_bed = rules.generate_beds.output.gene_bed,
         long_gene_bed = rules.generate_beds.output.long_gene_bed,
         gene_desert_bed = rules.generate_beds.output.gene_desert_bed,
         promoter_bed = rules.generate_beds.output.promoter_bed,
         gene_body_bed = rules.generate_beds.output.gene_body_bed
     output:
-        gene_desert_counts = f"{PREFIX}/bedtools_multicov/{config['GSE']}_{config['treatment_min']}min_GeneDesertCounts.txt",
+        gene_desert_counts = f"{PREFIX}/bedtools_multicov/{config['GSE']}_GeneDesertCounts.txt",
         long_gene_counts = f"{PREFIX}/bedtools_multicov/{config['GSE']}_{config['treatment_min']}min_LongGeneEndCounts.txt",
-        promoter_counts = f"{PREFIX}/bedtools_multicov/{config['GSE']}_{config['treatment_min']}min_PromoterCounts.txt",
-        gene_body_counts = f"{PREFIX}/bedtools_multicov/{config['GSE']}_{config['treatment_min']}min_GeneBodyCounts.txt"
+        promoter_counts = f"{PREFIX}/bedtools_multicov/{config['GSE']}_PromoterCounts.txt",
+        gene_body_counts = f"{PREFIX}/bedtools_multicov/{config['GSE']}_GeneBodyCounts.txt"
     resources:
         time_min = int(custom_param('count_time', 180)),
-        cpus = 1
+        cpus = 2
     params:
-        job_name = f"{config['GSE']}_BEDTOOLSMULTICOV",
-        sample_names = "\\t".join(SAMPLES)
+        job_name = f"{config['GSE']}_BEDTOOLSMULTICOV"
     run:
-        strandedness = str(custom_param('strandedness', infer_strandedness(config[ORGANISM]['bed_genome'], input[0])))
+        sample_names = "\\t".join(map(lambda x: os.path.basename(x)[:-4], input.bams))
+        strandedness = str(custom_param('strandedness', infer_strandedness(input.gene_bed, input.bams[0])))
 
-        print(f"STAR strandedness: {strandedness}")
+        print(f"Strandedness for multicov: {strandedness}")
 
         shell(f"""
         # Count reads at regions for normalisation
             bedtools multicov {strandedness} -bams {{input.bams}} -bed {{input.long_gene_bed}} | \
-            sed '1 i chr\\tstart\\tend\\tname\\tscore\\tstrand\\t{{params.sample_names}}' > {{output.long_gene_counts}}
+            sed '1 i chr\\tstart\\tend\\tname\\tscore\\tstrand\\t{sample_names}' > {{output.long_gene_counts}}
 
             bedtools multicov {strandedness} -bams {{input.bams}} -bed {{input.gene_desert_bed}} | \
-            sed '1 i chr\\tstart\\tend\\t{{params.sample_names}}' > {{output.gene_desert_counts}}
+            sed '1 i chr\\tstart\\tend\\t{sample_names}' > {{output.gene_desert_counts}}
 
         # Count reads at promoter and gene body
             bedtools multicov {strandedness} -bams {{input.bams}} -bed {{input.promoter_bed}} | \
-            sed '1 i chr\\tstart\\tend\\tname\\tscore\\tstrand\\ttranscript_id\\t{{params.sample_names}}' > {{output.promoter_counts}}
+            sed '1 i chr\\tstart\\tend\\tname\\tscore\\tstrand\\ttranscript_id\\t{sample_names}' > {{output.promoter_counts}} \
+            & PROMOTER=$!
             bedtools multicov {strandedness} -bams {{input.bams}} -bed {{input.gene_body_bed}} | \
-            sed '1 i chr\\tstart\\tend\\tname\\tscore\\tstrand\\ttranscript_id\\t{{params.sample_names}}' > {{output.gene_body_counts}}
+            sed '1 i chr\\tstart\\tend\\tname\\tscore\\tstrand\\ttranscript_id\\t{sample_names}' > {{output.gene_body_counts}} \
+            & GENEBODY=$!
+
+        wait $PROMOTER
+        wait $GENEBODY
         """)
 
 rule filter_genebody:
@@ -411,23 +384,64 @@ rule filter_genebody:
         promoter_counts = rules.bedtools_multicov.output.promoter_counts,
         gene_body_counts = rules.bedtools_multicov.output.gene_body_counts
     output:
-        f"{PREFIX}/bedtools_multicov/{config['proj']}_GeneBodyCounts_filtered.txt"
+        f"{PREFIX}/bedtools_multicov/{config['GSE']}_GeneBodyCounts_filtered.txt"
     params:
-        job_name = f"{config['proj']}_FILTERGENEBODY",
+        job_name = f"{config['GSE']}_FILTERGENEBODY",
         rpm_thresh = 1,
         dist_thresh = 1000,
         bedtools_genome = f"{config[ORGANISM]['star']}/chrNameLength.txt",
-        tss_shift = 1500,
+        tss_shift = 2500,
         tes_shift = 500
     resources:
         time_min = 30,
         cpus = 1
     shell:
         """
-        python3 scripts/filter_genebody_counts.py \
-        -t {input.promoter_counts} -b {input.gene_body_counts} \
+        python3 script/filter_genebody_counts.py \
+        -p {input.promoter_counts} -b {input.gene_body_counts} \
         -r {params.rpm_thresh} -d {params.dist_thresh} \
         -g {input.gene_bed} -c {params.bedtools_genome} \
         -sl {params.tss_shift} -sr {params.tes_shift} \
         -o {output}
         """
+
+# Step 4: bigwig generation
+# rule bamcoverage_bigwig:
+#     input:
+#         rules.star_align.output.bam
+#     output:
+#         f"{PREFIX}/bigwig/{{sample}}.coverage.bw"
+#     params:
+#         job_name = f"{config['GSE']}_{{sample}}_BAMCOV",
+#         blacklist = config[ORGANISM]['blacklist_bed']
+#     resources:
+#         time_min = 30,
+#         cpus = 20
+#     conda: "env/gropro-seq.yml"
+#     log: f"{PREFIX}/bigwig/log/bamCoverage.{{sample}}.coverage.log"
+#     shell:
+#         """
+#         bamCoverage -b {input} -p {resources.cpus} -o {output} \
+#         --binSize 1 \
+#         --blackListFileName {params.blacklist} --skipNAs &> {log}
+#         """
+
+# rule bamcoverage_bigwig_offset:
+#     input:
+#         rules.star_align.output.bam
+#     output:
+#         f"{PREFIX}/bigwig/{{sample}}.coverage.offset.bw"
+#     params:
+#         job_name = f"{config['GSE']}_{{sample}}_BAMCOVOFF",
+#         blacklist = config[ORGANISM]['blacklist_bed']
+#     resources:
+#         time_min = 30,
+#         cpus = 20
+#     conda: "env/gropro-seq.yml"
+#     log: f"{PREFIX}/bigwig/log/bamCoverage.{{sample}}.coverage.offset.log"
+#     shell:
+#         """
+#         bamCoverage -b {input} -p {resources.cpus} -o {output} \
+#         --binSize 1 --Offset 1 --samFlagInclude 64 \
+#         --blackListFileName {params.blacklist} --skipNAs &> {log}
+#         """
